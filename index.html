@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ClientFinder</title>
+<style>
+:root{color-scheme:light dark;--paper:#f3f7f6;--card:#fff;--ink:#142923;--muted:#51665e;--line:#dce6e0;--accent:#126953;--button:#fff}*{box-sizing:border-box}body{margin:0;font:15px system-ui,sans-serif;background:var(--paper);color:var(--ink)}@media(prefers-color-scheme:dark){:root{--paper:#111b18;--card:#182722;--ink:#edf8f2;--muted:#a7c1b6;--line:#334b41;--accent:#85e0bd;--button:#15241e}}header{background:#122d25;color:#effaf5;padding:22px max(4vw,18px);display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}header strong{font-size:23px;letter-spacing:-.04em}header span{color:#b8d6cb}nav{display:flex;gap:6px;flex-wrap:wrap}nav button{color:#ecf6f0;background:transparent;border-color:#56776b}nav button[aria-current=true]{background:#d5f2e4;color:#153b2d}main{max-width:1250px;margin:auto;padding:32px max(3vw,16px)}h1{margin:0 0 8px;font-size:38px;letter-spacing:-.05em}h2{letter-spacing:-.03em}p,small{color:var(--muted)}a{color:var(--accent)}button,input,select,textarea{font:inherit;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);padding:9px 12px}button{cursor:pointer}button:hover,a:hover{text-decoration:underline}button.primary{background:var(--accent);color:var(--button);border-color:transparent;font-weight:650}button:disabled{opacity:.55;cursor:wait}label{display:grid;gap:5px;color:var(--muted);font-size:13px}input,select,textarea{width:100%;min-width:0}textarea{min-height:65px}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;margin:14px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:12px;margin:14px 0}.metrics .card{margin:0}.metrics strong{display:block;font-size:27px}.scroll{overflow:auto}table{border-collapse:collapse;width:100%;white-space:nowrap}td,th{text-align:left;padding:12px 10px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:13px}.actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:12px 0}.actions form{display:contents}.link{display:inline-block;border:1px solid var(--line);padding:7px 10px;border-radius:8px;text-decoration:none}#notice{min-height:25px;margin:9px 0;color:var(--accent)}details{margin:12px 0}summary{cursor:pointer;font-weight:650}footer{margin-top:35px;color:var(--muted);font-size:13px}
+</style>
+<header><div><strong>ClientFinder</strong> <span> / Vancouver</span></div><nav aria-label="Workspace"></nav></header>
+<main><h1 id="title"></h1><div id="notice" role="status"></div><section id="screen"></section><footer>Contains information licensed under the <a href="https://opendata.vancouver.ca/pages/licence/" target="_blank" rel="noopener">Open Government Licence – Vancouver</a>.</footer></main>
+<script>
+'use strict';
+const $ = selector => document.querySelector(selector);
+const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const text = value => esc(value === '' || value == null ? 'Unknown' : value);
+const normalize = value => (value || '').normalize('NFKD').replace(/\p{M}/gu,'').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+const nameKey = value => normalize(value).replace(/(?: (?:ltd|limited|inc|incorporated|corp|corporation|llc))+$/,'');
+const api = 'https://opendata.vancouver.ca/api/explore/v2.1/catalog/datasets/';
+const sources = ['business-licences','business-licences-2013-to-2024','business-licences-1997-to-2012'];
+const statuses = ['Not contacted','Ready to call','No answer','Gatekeeper reached','Owner unavailable','Call back requested','Interested','Meeting scheduled','Demo requested','Demo sent','Proposal sent','Negotiating','Sold','Not interested','Do not call','Disqualified'];
+const websites = ['Not researched','No website found','Website confirmed absent','Facebook only','Instagram only','Social media only','Outdated website','Broken website','Poor mobile experience','Functional website','Modern website','Website under construction','Requires further investigation'];
+const research = ['Unresearched','In progress','Qualified','Rejected'];
+const stages = ['Dashboard','Explorer','Research Queue','Calling Queue','Pipeline','Data & settings'];
+const weights = [15,20,10,10,15,10,5,10,5];
+const labels = ['10+ years of licence evidence','Website opportunity','20+ reviews','Rating of 4.2+','High-value services','Independent business','Recent activity','Bilingual opportunity','Public contact'];
+const storageKey = 'clientfinder-v1';
+const blank = () => ({records:{}, contacts:[], updated:null, target:15, en:'Hi, I’m a web designer in Vancouver. Is the owner available for a quick question about your website?', es:'Hola, soy diseñador web en Vancouver. ¿Está la persona encargada del negocio? Tengo una pregunta breve sobre su sitio web.'});
+let db = blank(), storageError = '';
+try { db = JSON.parse(localStorage.getItem(storageKey)) || blank(); } catch { storageError = 'Browser storage could not be read. Check access or restore a backup.'; }
+let page = 'Dashboard', chosen = null, offset = 0, skipped = new Set(), busy = false, notice = storageError;
+let filters = {query:'', city:'', industry:'', age:'', website:'', ranking:'Score'};
+function commit(next, message) { localStorage.setItem(storageKey,JSON.stringify(next)); db=next; notice=message; }
+function update(id, change, message='Prospect saved.') {
+ const row = {...db.records[id], ...change};
+ if (db.records[id].sales === 'Do not call') row.sales = 'Do not call';
+ commit({...db,records:{...db.records,[id]:row}},message);
+}
+function sourceYear(raw) { const year=Number(raw); return year>=100?year:year>=97?1900+year:2000+year; }
+function licenceRow(row, dataset) {
+ const hide = normalize(row.businesstype).includes('home based');
+ return {dataset,rsn:String(row.licencersn||''),year:sourceYear(row.folderyear), legal:row.businessname||'', trade:row.businesstradename||'', city:row.city||'', province:row.province||'', industry:row.businesstype||'', status:row.status||'', expiry:row.expireddate||'', address:hide||!row.house||!row.street?'':[row.unit,row.house,row.street].filter(Boolean).join(' '), postal:hide?'':row.postalcode||'', neighbourhood:row.localarea||'', employees:row.numberofemployees ?? null};
+}
+function identity(row) { return row.address && row.city && row.legal ? [nameKey(row.legal),normalize(row.address),normalize(row.city),normalize(row.province)].join('|') : 'rsn:'+row.rsn; }
+function history(row) { return (row.evidence||[]).filter(item=>!item.excluded); }
+function age(row) { const years = [row.source?.year,...history(row).map(item=>item.year)].filter(Number.isFinite); return years.length ? new Date().getFullYear()-Math.min(...years) : null; }
+function score(row) {
+ const website = websites.indexOf(row.websiteStatus);
+ const merits = [history(row).some(item=>item.confidence==='High'&&new Date().getFullYear()-item.year>=10)?true:null, website>=2&&website<12?website<=8:null, row.reviews==null?null:row.reviews>=20, row.rating==null?null:row.rating>=4.2, row.highValue, row.independent, row.active ?? (row.source?.status==='Issued'&&row.source.expiry>=new Date().toISOString().slice(0,10)?true:null), row.bilingual, row.phone||row.email?true:null];
+ const points=merits.reduce((total,value,i)=>total+(value?weights[i]:0),0);
+ return {points, potential:points+merits.reduce((total,value,i)=>total+(value==null?weights[i]:0),0), complete:Math.round(100*merits.filter(value=>value!=null).length/weights.length), merits};
+}
+const sales = row => row.sales || statuses[0];
+const web = row => row.websiteStatus || websites[0];
+const qualified = row => (row.research||research[0])===research[2];
+const callable = row => row.phone && ['Ready to call','No answer','Gatekeeper reached','Owner unavailable','Call back requested'].includes(sales(row)) && row.research!==research[3];
+const business = row => row.name || row.source?.trade || row.source?.legal || 'Unknown';
+const city = row => row.city || row.source?.city || '';
+const industry = row => row.industry || row.source?.industry || '';
+const options = (values,current) => values.map(value=>'<option'+(value===current?' selected':'')+'>'+esc(value)+'</option>').join('');
+const input = (label,name,value='',attributes='') => '<label>'+esc(label)+'<input name="'+name+'" value="'+esc(value)+'" '+attributes+'></label>';
+const select = (label,name,values,current) => '<label>'+esc(label)+'<select name="'+name+'">'+options(values,current)+'</select></label>';
+const button = (label, action, extra='') => '<button type="button" data-action="'+action+'" '+extra+'>'+esc(label)+'</button>';
+const link = (label,url) => '<a class="link" target="_blank" rel="noopener noreferrer" href="'+esc(url)+'">'+esc(label)+'</a>';
+const card = (label,count) => '<div class="card"><small>'+esc(label)+'</small><strong>'+esc(count)+'</strong></div>';
+const money = amount => new Intl.NumberFormat('en-CA',{style:'currency',currency:'CAD'}).format(amount);
+function dashboard(rows) {
+ const pending=db.contacts.filter(call=>call.followup&&!call.done);
+ const today=new Date().toLocaleDateString('en-CA');
+ const cards=[['Businesses',rows.length],['10+ years with strong evidence',rows.filter(row=>score(row).merits[0]).length],['Qualified',rows.filter(qualified).length],['Ready for calls',rows.filter(callable).length],['Calls today',db.contacts.filter(call=>call.day===today).length+' / '+db.target],['Pending follow-ups',pending.length],['Sales',rows.filter(row=>sales(row)==='Sold').length],['Recorded revenue',money(rows.reduce((sum,row)=>sum+(sales(row)==='Sold'?row.sale||0:0),0))]];
+ return '<div class="grid metrics">'+cards.map(item=>card(...item)).join('')+'</div><div class="card"><h2>Pending follow-ups</h2>'+(pending.length?pending.sort((a,b)=>a.followup.localeCompare(b.followup)).map(call=>'<div class="actions">'+button(business(db.records[call.id]),'open','data-id="'+esc(call.id)+'"')+'<span>'+text(call.followup)+' · '+text(call.next)+'</span>'+button('Complete','complete','data-contact="'+esc(call.key)+'"')+'</div>').join(''):'<p>No follow-ups scheduled.</p>')+'</div>'+(rows.length?'':'<p>Open Data & settings to import official licences or add a prospect.</p>');
+}
+function explorer(rows) {
+ const found=rows.filter(row=>(page!=='Pipeline'||sales(row)!==statuses[0])&&normalize([business(row),row.source?.legal,row.source?.address].join(' ')).includes(normalize(filters.query))&&normalize(city(row)).includes(normalize(filters.city))&&normalize(industry(row)).includes(normalize(filters.industry))&&(!filters.age||(age(row)!=null&&age(row)>=Number(filters.age)))&&(!filters.website||web(row)===filters.website));
+ found.sort((a,b)=>filters.ranking==='Age'?(age(b)??-1)-(age(a)??-1):filters.ranking==='Potential'?score(b).potential-score(a).potential:filters.ranking==='Completeness'?score(b).complete-score(a).complete:score(b).points-score(a).points);
+ const count=found.length;
+ if(offset>=count)offset=Math.max(0,Math.floor((count-1)/25)*25);
+ const table=found.slice(offset,offset+25).map(row=>'<tr><td>'+button(business(row),'open','data-id="'+esc(row.id)+'"')+'</td><td>'+text(industry(row))+'</td><td>'+text(row.source?.neighbourhood||city(row))+'</td><td>'+text(age(row))+'</td><td>'+text(web(row))+'</td><td>'+score(row).points+'</td><td>'+text(sales(row))+'</td></tr>').join('');
+ return '<form class="card" data-form="filter"><div class="grid">'+input('Business','query',filters.query)+input('City','city',filters.city)+input('Industry','industry',filters.industry)+input('Minimum licence age','age',filters.age,'type="number" min="0"')+select('Website','website',['',...websites],filters.website)+select('Rank by','ranking',['Score','Age','Potential','Completeness'],filters.ranking)+'</div><button>Apply filters</button></form><div class="card scroll"><table><thead><tr><th>Business</th><th>Industry</th><th>Location</th><th>Licence age</th><th>Website</th><th>Score</th><th>Sales stage</th></tr></thead><tbody>'+table+'</tbody></table><div class="actions">'+button('Previous','previous')+'<small>'+(count?offset+1:0)+'–'+Math.min(offset+25,count)+' of '+count+'</small>'+button('Next','next')+'</div></div>';
+}
+function researchLinks(row) {
+ const q=[business(row),row.source?.address,city(row)].filter(Boolean).join(' ');
+ return link('Maps','https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(q))+[['Google',''],['Website',' official website'],['Facebook',' site:facebook.com'],['Instagram',' site:instagram.com'],['Directories',' business directory'],['Founding date',' founded established']].map(([label,suffix])=>link(label,'https://www.google.com/search?q='+encodeURIComponent(q+suffix))).join('');
+}
+function tri(label,name,row) { return select(label,name,['Unknown','Yes','No'],row[name]==null?'Unknown':row[name]?'Yes':'No'); }
+function detail(row) {
+ const s=score(row); const a=age(row); const id=esc(row.id);
+ const hits=(row.evidence||[]).map(item=>'<tr><td>'+text(item.year)+'</td><td>'+text(item.trade||item.legal)+'</td><td>'+text(item.address)+'</td><td>'+text(item.confidence)+'</td><td>'+text(item.dataset+' / '+item.rsn)+'</td><td>'+button(item.excluded?'Restore link':'Exclude link','evidence','data-match="'+esc(item.dataset+':'+item.rsn)+'"')+'</td></tr>').join('');
+ const years=[...new Set([row.source?.year,...history(row).map(x=>x.year)].filter(Number.isFinite))].sort((x,y)=>x-y);
+ const gaps=years.length?Array.from({length:years.at(-1)-years[0]+1},(_,i)=>years[0]+i).filter(y=>!years.includes(y)):[];
+ const calls=db.contacts.filter(item=>item.id===row.id).slice().reverse();
+ const telephone=row.phone&&row.sales!=='Do not call'?'<div class="actions"><a class="link" href="tel:'+esc(row.phone.replace(/[^+0-9]/g,''))+'">'+esc(row.phone)+'</a>'+button('Copy number','copy')+'</div>':'';
+ return '<div class="actions">'+button(page==='Calling Queue'||page==='Research Queue'?'Skip to next':'Back to list','close')+'</div><div class="card"><h2>'+text(business(row))+'</h2><p>'+text(industry(row))+' · '+text(row.source?.address||city(row))+' · '+text(a)+' licence years · '+text(row.source?.status)+'</p><div class="actions">'+researchLinks(row)+'</div>'+telephone+'<div class="grid metrics">'+card('Confirmed score',s.points)+card('Potential score',s.potential)+card('Data completeness',s.complete+'%')+'</div><details><summary>Score breakdown</summary><ul>'+labels.map((label,i)=>'<li>'+esc(label)+' · '+(s.merits[i]==null?'Unverified':s.merits[i]?weights[i]+' points':'0 points')+'</li>').join('')+'</ul></details></div>'+
+ '<form class="card" data-form="prospect"><h2>Verified research</h2><div class="grid">'+input('Public phone','phone',row.phone,'type="tel"')+input('Public email','email',row.email,'type="email"')+input('Website URL','website',row.website,'type="url"')+select('Website status','websiteStatus',websites,web(row))+input('Review rating','rating',row.rating,'type="number" min="0" max="5" step="0.1"')+input('Review count','reviews',row.reviews,'type="number" min="0"')+input('Preferred language','language',row.language)+tri('Independent','independent',row)+tri('Recently active','active',row)+tri('High-value services','highValue',row)+tri('Bilingual opportunity','bilingual',row)+select('Research stage','research',research,row.research||research[0])+select('Sales stage','sales',row.sales==='Do not call'?['Do not call']:statuses,sales(row))+select('Package','package',['','Basic · CAD 499','Professional · CAD 899','Premium · CAD 1,499','Custom'],row.package)+input('Quoted amount (CAD)','quote',row.quote,'type="number" min="0" step="0.01"')+input('Sale amount (CAD)','sale',row.sale,'type="number" min="0" step="0.01"')+input('Monthly maintenance (CAD)','mrr',row.mrr,'type="number" min="0" step="0.01"')+'</div><label>Notes<textarea name="notes">'+esc(row.notes)+'</textarea></label><div class="actions"><button class="primary" name="intent" value="save">Save prospect</button>'+(page==='Research Queue'?'<button name="intent" value="qualify">Qualify & next</button><button name="intent" value="reject">Reject & next</button><button name="intent" value="call">Add to calling queue</button>':'')+'</div></form>'+
+ '<div class="card"><h2>Licence evidence</h2><p>'+text(years[0])+'–'+text(years.at(-1))+' · '+years.length+' recorded years. Gaps: '+(gaps.length?gaps.join(', '):years.length?'None in recorded span':'Unknown')+'. Earliest evidence is a licence year. Founding date and continuous operation require separate verification.</p>'+(row.source?'<p>Primary record: '+text(row.source.dataset+' / '+row.source.rsn)+' · '+text(row.source.legal)+' · '+text(row.source.postal)+' · Employees: '+text(row.source.employees)+'</p>'+button('Find historical evidence','history','class="primary"'):'<p>Add an official prospect to search licence history.</p>')+(hits?'<div class="scroll"><table><thead><tr><th>Year</th><th>Business</th><th>Address</th><th>Confidence</th><th>Source</th><th>Correction</th></tr></thead><tbody>'+hits+'</tbody></table></div>':'')+'</div>'+
+ '<div class="card"><h2>Contact history</h2><details><summary>English and Spanish call scripts</summary><p>'+esc(db.en)+'</p><p>'+esc(db.es)+'</p></details>'+(calls.length?calls.map(call=>'<p><strong>'+text(call.day)+' · '+text(call.outcome)+'</strong> · '+text(call.person)+' · '+text(call.notes)+(call.followup?' · Follow-up '+text(call.followup):'')+'</p>').join(''):'<p>No calls logged.</p>')+(sales(row)==='Do not call'?'<p>Do not call is active.</p>':'<form data-form="contact"><div class="grid">'+input('Person contacted','person')+select('Outcome','outcome',statuses.slice(2),'No answer')+input('Follow-up date','followup','','type="date"')+input('Next action','next')+input('Objections','objections')+'</div><label>Call notes<textarea name="notes"></textarea></label><div class="actions"><button class="primary">Log call'+(page==='Calling Queue'?' & next':'')+'</button></div></form>')+'</div>';
+}
+function dataPage() {
+ return '<div class="card"><h2>Import Vancouver prospects</h2><p>Import up to 500 issued licences per batch. Use an industry filter to narrow the results. Existing CRM records and do-not-call status are preserved.</p><form data-form="import"><div class="grid">'+input('Industry keyword','category')+input('Licence year','year',new Date().getFullYear(),'type="number" min="2024" max="2099" required')+input('Batch number','batch',1,'type="number" min="1" max="20" required')+'</div><button class="primary">Import from City of Vancouver</button></form><p>Last successful import: '+text(db.updated)+'</p></div><form class="card" data-form="manual"><h2>Add manual prospect</h2><div class="grid">'+input('Business name','name','','required')+input('City','city','Vancouver','required')+input('Industry','industry')+'</div><button>Add prospect</button></form><div class="card"><h2>Browser data and backups</h2><p>Records are saved for this site in this browser profile. Export a backup before clearing browser data or switching profiles.</p><div class="actions">'+button('Export JSON backup','backup')+'</div><form data-form="restore"><div class="grid"><label>Backup to restore<input name="file" type="file" accept="application/json,.json" required></label></div><label><span><input style="width:auto" type="checkbox" required> Replace current browser records</span></label><button>Restore backup</button></form></div><form class="card" data-form="settings"><h2>Calling settings</h2><div class="grid">'+input('Daily call target','target',db.target,'type="number" min="1" required')+'</div><label>English script<textarea name="en">'+esc(db.en)+'</textarea></label><label>Spanish script<textarea name="es">'+esc(db.es)+'</textarea></label><p><button>Save settings</button></p></form>';
+}
+function render() {
+ $('nav').innerHTML=stages.map(item=>button(item,'navigate','data-page="'+esc(item)+'" aria-current="'+(page===item)+'"')).join('');
+ $('#title').textContent=page;
+ $('#notice').textContent=notice;
+ const rows=Object.values(db.records);
+ if(page==='Research Queue'||page==='Calling Queue'){
+   const list=rows.filter(row=>!skipped.has(row.id)&&(page==='Calling Queue'?callable(row):!['Qualified','Rejected'].includes(row.research)&&sales(row)!=='Do not call'));
+   list.sort((a,b)=>(score(b).potential-score(b).points)-(score(a).potential-score(a).points));
+   chosen=chosen||list[0]?.id;
+ }
+ $('#screen').innerHTML=chosen&&db.records[chosen]?detail(db.records[chosen]):page==='Dashboard'?dashboard(rows):page==='Explorer'||page==='Pipeline'?explorer(rows):page==='Data & settings'?dataPage():'<div class="card"><p>No more prospects in this queue.</p>'+button('Reset skipped prospects','reset')+'</div>';
+ if(busy) $('#screen').querySelectorAll('button').forEach(element=>element.disabled=true);
+}
+const literal = value => "'"+String(value).replace(/'/g,"''")+"'";
+async function records(dataset,query) {
+ const url=api+dataset+'/records?'+new URLSearchParams(query);
+ const response=await fetch(url,{signal:AbortSignal.timeout(25000)});
+ if(!response.ok) throw new Error('City API request failed ('+response.status+'). Try again or narrow the query.');
+ return (await response.json()).results;
+}
+async function importCity(data) {
+ const condition=["status='Issued'","city='Vancouver'",'folderyear='+literal(String(data.year).slice(-2))];
+ if(data.category.trim()) condition.push('search(businesstype,'+literal(data.category.trim())+')');
+ const batch=Number(data.batch), next={...db.records};
+ let total=0;
+ for(let i=0;i<5;i++){
+   const results=await records(sources[0],{where:condition.join(' AND '),order_by:'licencersn',limit:100,offset:(batch-1)*500+i*100});
+   for(const raw of results){
+     const source=licenceRow(raw,sources[0]);
+     if(!source.rsn||!source.legal&&!source.trade)continue;
+     const id=identity(source), old=Object.hasOwn(next,id)?next[id]:{};
+     next[id]={...old,id,source:old.source&&old.source.year>source.year?old.source:source};
+     total++;
+   }
+   if(results.length<100)break;
+ }
+ if(!total)throw new Error('No licences found for this batch. Try the first batch or a broader industry.');
+ commit({...db,records:next,updated:new Date().toLocaleString()},'Processed '+total+' official licence records.');
+}
+async function findHistory(row) {
+ const src=row.source;
+ const names=[src.legal,src.trade].filter(Boolean).map(literal);
+ if(!names.length)throw new Error('The primary licence has no searchable name.');
+ const condition='city='+literal(src.city)+' AND ('+names.map(name=>'businessname='+name+' OR businesstradename='+name).join(' OR ')+") AND status IN ('Issued','Inactive','Gone Out of Business')";
+ const saved=new Map((row.evidence||[]).map(item=>[item.dataset+':'+item.rsn,item]));
+ const results=await Promise.all(sources.map(dataset=>records(dataset,{where:condition,limit:100,order_by:'folderyear DESC'})));
+ results.forEach((batch,i)=>batch.forEach(raw=>{
+   const item=licenceRow(raw,sources[i]);
+   if(item.rsn===src.rsn||!item.year||!item.address||normalize(item.address)!==normalize(src.address)||normalize(item.province)!==normalize(src.province))return;
+   if(item.postal&&src.postal&&normalize(item.postal)!==normalize(src.postal))return;
+   if(src.legal&&nameKey(item.legal)===nameKey(src.legal))item.confidence='High';
+   else if(src.trade&&nameKey(item.trade)===nameKey(src.trade))item.confidence='Medium';
+   else return;
+   const key=item.dataset+':'+item.rsn;
+   saved.set(key,{...item,excluded:saved.get(key)?.excluded||false});
+ }));
+ update(row.id,{evidence:[...saved.values()].sort((a,b)=>a.year-b.year)},saved.size?'Licence evidence updated.':'No matching licence evidence found for the same name and address.');
+}
+function nextProspect() { if(chosen)skipped.add(chosen); chosen=null; }
+function report(error){ notice=error.message||String(error); $('#notice').textContent=notice; }
+$('#screen').addEventListener('submit',async event=>{
+ event.preventDefault();
+ if(busy)return;
+ const form=event.target, type=form.dataset.form, data=Object.fromEntries(new FormData(form));
+ notice='';
+ try {
+   if(type==='filter'){filters=data;offset=0;}
+   if(type==='manual'){
+     const name=data.name.trim(), home=data.city.trim();
+     if(!nameKey(name)||!home)throw new Error('Enter a business name and city.');
+     if(Object.values(db.records).some(row=>normalize(city(row))===normalize(home)&&[business(row),row.source?.legal].some(value=>nameKey(value)===nameKey(name))))throw new Error('Possible duplicate. The existing prospect was kept.');
+     const id=crypto.randomUUID();
+     commit({...db,records:{...db.records,[id]:{id,name,city:home,industry:data.industry.trim()}}},'Prospect added.');
+   }
+   if(type==='prospect'){
+     const intent=event.submitter?.value;
+     for(const key of ['rating','reviews','quote','sale','mrr'])data[key]=data[key]===''?null:Number(data[key]);
+     for(const key of ['independent','active','highValue','bilingual'])data[key]=data[key]==='Unknown'?null:data[key]==='Yes';
+     data.phone=data.phone.trim();
+     if(data.phone&&!/^\+?[() .0-9-]{7,25}$/.test(data.phone))throw new Error('Enter a public telephone number.');
+     if(data.website&&!['https:','http:'].includes(new URL(data.website).protocol))throw new Error('Use an HTTP or HTTPS website URL.');
+     if(intent==='call'){
+       if(!data.phone||sales(db.records[chosen])==='Do not call'||data.sales==='Do not call')throw new Error('An eligible business with a public phone number is required.');
+       data.sales='Ready to call';
+     }
+     if(intent==='qualify') data.research='Qualified';
+     if(intent==='reject') data.research='Rejected';
+     data.verified=new Date().toISOString();
+     update(chosen,data);
+     if(page==='Research Queue')nextProspect();
+   }
+   if(type==='contact'){
+     if(sales(db.records[chosen])==='Do not call')throw new Error('Do not call is active.');
+     const call={...data,id:chosen,key:crypto.randomUUID(),at:new Date().toISOString(),day:new Date().toLocaleDateString('en-CA'),done:false};
+     const row={...db.records[chosen],sales:data.outcome};
+     commit({...db,contacts:[...db.contacts,call],records:{...db.records,[chosen]:row}},'Call logged.');
+     if(page==='Calling Queue')nextProspect();
+   }
+   if(type==='settings')commit({...db,target:Number(data.target),en:data.en,es:data.es},'Settings saved.');
+   if(type==='import'){busy=true;notice='Importing official licences…';render();await importCity(data);}
+   if(type==='restore'){
+     const restored=JSON.parse(await data.file.text());
+     if(!restored||restored.version!==1||!restored.data?.records||!Array.isArray(restored.data.contacts)||Object.entries(restored.data.records).some(([k,r])=>!r||k!==r.id))throw new Error('Choose a ClientFinder version 1 backup.');
+     commit({...blank(),...restored.data},'Backup restored.');
+   }
+   busy=false;render();
+ } catch(error){ const wasBusy=busy;busy=false;if(wasBusy)render();report(error); }
+});
+document.addEventListener('click',async event=>{
+ const target=event.target.closest('[data-action]');
+ if(!target||busy)return;
+ const {action,id,page:destination,contact,match}=target.dataset;
+ try {
+   notice='';
+   if(action==='navigate'){page=destination;chosen=null;offset=0;skipped=new Set();}
+   if(action==='open')chosen=id;
+   if(action==='close')nextProspect();
+   if(action==='next')offset+=25;
+   if(action==='previous')offset=Math.max(0,offset-25);
+   if(action==='reset'){skipped.clear();chosen=null;}
+   if(action==='history'){busy=true;notice='Searching City licence records…';render();await findHistory(db.records[chosen]);}
+   if(action==='evidence')update(chosen,{evidence:db.records[chosen].evidence.map(item=>item.dataset+':'+item.rsn===match?{...item,excluded:!item.excluded}:item)},'Evidence correction saved.');
+   if(action==='complete')commit({...db,contacts:db.contacts.map(item=>item.key===contact?{...item,done:true}:item)},'Follow-up completed.');
+   if(action==='copy'){await navigator.clipboard.writeText(db.records[chosen].phone);notice='Phone number copied.';}
+   if(action==='backup'){
+     const url=URL.createObjectURL(new Blob([JSON.stringify({version:1,data:db})],{type:'application/json'}));
+     const download=document.createElement('a');download.href=url;download.download='clientfinder-'+new Date().toISOString().slice(0,10)+'.json';download.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+   }
+   busy=false;render();
+ }catch(error){busy=false;render();report(error);}
+});
+render();
+</script></html>
