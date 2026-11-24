@@ -1,18 +1,17 @@
 # ClientFinder
 
-[Open the web app](https://securitybreach001.github.io/ClientFinder/)
+[Open ClientFinder](https://securitybreach001.github.io/ClientFinder/)
 
-ClientFinder is a Vancouver prospecting and sales CRM. Open the site in a regular browser profile. In **Data & settings**, import a batch from the City of Vancouver or add a manually researched business. Open a prospect in **Explorer** to check its available licence history and record verified research. Use **Research Queue** to qualify businesses and **Calling Queue** to log manual calls and schedule follow-ups.
+Browse the pre-researched Vancouver business list. Search by business, location or industry. Click a column header to sort, and click it again to reverse the order. Use **Move to** to put a business in **Contacted**, **Completed**, or **Ignore**. Move it back to **Browse** to undo. Lists are saved in this browser profile.
 
-## Architecture and progress
+## Data and scoring
 
-- A static HTML, CSS, and JavaScript app runs on GitHub Pages. No installation, server credentials, or paid API is needed.
-- Official City API queries import up to 500 issued Vancouver licences per batch. History is queried on demand across the current, 2013–2024, and 1997–2012 datasets. The matching rules require a corroborating address, province, and business name, with postal codes checked when both records have one. Excluded matches stay excluded when history is refreshed.
-- CRM records, research notes, call history, and do-not-call flags are saved to browser storage. They are scoped to the browser profile and site origin. Export a JSON backup before clearing browsing data or switching profiles.
-- Included in the MVP are search and age filters, score explanations and completeness, website classifications, research and calling queues, bilingual call scripts, follow-ups, a sales pipeline, and JSON backup/restore.
+The first research batch contains eight Vancouver beauty-service businesses with current municipal licences. Seven have an older corroborated record. The app links to the current and oldest matched record where available. The year reflects the earliest match found, and periods with missing licence evidence are possible.
 
-## Known limits and next steps
+Three websites were confirmed on first-party sites. One business returned social and directory results without a matching standalone site, and is marked **No website found**. Four remain **Unknown** pending confirmation. No website found describes a search result and can change with further evidence.
 
-This release uses targeted searches and browser storage. Full historical bulk indexing, moved-business matching, configurable scoring and packages, CSV exchange, richer analytics, and automated regression tests are outstanding. Name prefiltering can miss changed names and spelling variants. The historical query is capped at 100 candidates per dataset. Distinct licence years indicate recorded evidence and do not establish founding date or uninterrupted operation.
+The score awards one point per year since the earliest matched licence, up to 40, and 60 additional points for no website found. Scores with missing licence or website evidence are provisional. Scores are an outreach ranking and have no statistical interpretation.
+
+The app is static HTML, CSS, and JavaScript on GitHub Pages. Its research dataset ships with the app and is independent of the browser's saved lists. Citywide research is outstanding.
 
 Contains information licensed under the [Open Government Licence – Vancouver](https://opendata.vancouver.ca/pages/licence/).
